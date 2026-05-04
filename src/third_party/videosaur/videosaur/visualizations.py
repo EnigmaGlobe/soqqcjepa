@@ -7,8 +7,16 @@ import numpy as np
 import torch
 from PIL import ImageColor, Image
 from src.third_party.videosaur.videosaur.data.transforms import Resize
-import seaborn as sns
-import cv2
+
+try:
+    import seaborn as sns
+except Exception:  # noqa: BLE001
+    sns = None
+
+try:
+    import cv2
+except Exception:  # noqa: BLE001
+    cv2 = None
 
 CMAP_STYLE = "tab"
 
@@ -99,10 +107,15 @@ def draw_segmentation_masks_on_image(
     if masks.dtype != torch.bool:
         raise ValueError(f"The masks must be of dtype bool. Got {masks.dtype}")
     if masks.shape[-2:] != image.shape[-2:]:
-        image_resized = np.transpose(image.numpy(), (1,2,0))
-        image_resized = cv2.resize(image_resized, (224, 224), interpolation=cv2.INTER_AREA)
-        trans = np.transpose(image_resized, (2,0,1))
-        image = torch.tensor(trans, dtype=torch.uint8)
+        if cv2 is None:
+            image = torch.nn.functional.interpolate(
+                image[None].float(), size=(224, 224), mode="bilinear", align_corners=False
+            )[0].to(torch.uint8)
+        else:
+            image_resized = np.transpose(image.numpy(), (1,2,0))
+            image_resized = cv2.resize(image_resized, (224, 224), interpolation=cv2.INTER_AREA)
+            trans = np.transpose(image_resized, (2,0,1))
+            image = torch.tensor(trans, dtype=torch.uint8)
         # raise ValueError(
         #     (
         #         "The image and the masks must have the same height and width,"

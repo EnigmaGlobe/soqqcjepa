@@ -1,0 +1,33 @@
+{
+  "phase": 1,
+  "mode": "local_python",
+  "device": "cpu",
+  "checkpoint": "D:\\Soqqle\\v2\\soqqcjepa\\checkpoints\\pusht_videosaur_1_epoch_30_object.ckpt",
+  "sample": "random_fixture",
+  "input": {
+    "shape": [
+      1,
+      3,
+      6,
+      128
+    ],
+    "dtype": "float32",
+    "mean": 0.006523984484374523,
+    "std": 1.0064103603363037,
+    "min": -3.6977031230926514,
+    "max": 3.4400761127471924
+  },
+  "output": {
+    "shape": [
+      1,
+      1,
+      6,
+      128
+    ],
+    "dtype": "float32",
+    "mean": -0.019991984590888023,
+    "std": 0.3155216574668884,
+    "min": -1.12661612033844,
+    "max": 1.0921838283538818
+  }
+}

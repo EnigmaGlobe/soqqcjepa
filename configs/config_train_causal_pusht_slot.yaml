@@ -19,11 +19,11 @@ hungarian_cost_type: mse  # options: mse, l1
 
 
 dataset_name: pusht_expert
-embedding_dir: '/your/own/path/slots.pkl'
+embedding_dir: 'checkpoints/pusht_videosaur_slots.pkl'
 cache_dir: "~/.stable_worldmodel"
-action_dir: '/your/own/path/pusht_expert_action_meta.pkl'
-proprio_dir: '/your/own/path/pusht_expert_proprio_meta.pkl'
-state_dir: '/your/own/path/pusht_expert_state_meta.pkl'
+action_dir: 'checkpoints/pusht_expert_action_meta.pkl'
+proprio_dir: 'checkpoints/pusht_expert_proprio_meta.pkl'
+state_dir: 'checkpoints/pusht_expert_state_meta.pkl'
 
 output_model_name: causal_world_model
 training_type: video  # options: video, wm
