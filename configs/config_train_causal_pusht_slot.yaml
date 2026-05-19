@@ -60,7 +60,7 @@ num_masked_slots: 2  # M: number of slots to mask during training
 
 predictor:
   depth: 6
-  heads: 16
+  heads: 4
   mlp_dim: 2048
   dim_head: 64
   dropout: 0.1

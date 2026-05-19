@@ -594,7 +594,8 @@ class ObjectCentricModel(pl.LightningModule):
         self, checkpoint_path: str, module_mapping = None
     ):
         """Load weights from a checkpoint into the specified modules."""
-        checkpoint = torch.load(checkpoint_path)
+        # Use map_location='cpu' to avoid CUDA device deserialization errors on different machines
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
         if "state_dict" in checkpoint:
             checkpoint = checkpoint["state_dict"]
 

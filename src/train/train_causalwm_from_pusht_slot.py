@@ -82,24 +82,22 @@ def get_data(cfg):
     
     logging.info(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}")
     
-    train_loader = DataLoader(
-        train_dataset,
+    train_loader_kwargs = dict(
+        dataset=train_dataset,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         drop_last=True,
-        persistent_workers=True,
-        prefetch_factor=2,
         pin_memory=True,
         shuffle=True,
         generator=rnd_gen,
     )
+    if cfg.num_workers and cfg.num_workers > 0:
+        train_loader_kwargs.update(persistent_workers=True, prefetch_factor=2)
+
+    train_loader = DataLoader(**train_loader_kwargs)
     
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=cfg.batch_size,
-        num_workers=cfg.num_workers,
-        pin_memory=True,
-    )
+    val_loader_kwargs = dict(dataset=val_dataset, batch_size=cfg.batch_size, num_workers=cfg.num_workers, pin_memory=True)
+    val_loader = DataLoader(**val_loader_kwargs)
     
     return spt.data.DataModule(train=train_loader, val=val_loader)
 

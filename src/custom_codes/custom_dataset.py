@@ -222,15 +222,46 @@ class PushTSlotDataset(Dataset):
         
         # Stack and compute stats matching norm_col_transform:
         # data.mean(0).unsqueeze(0), data.std(0).unsqueeze(0)
-        all_actions = torch.from_numpy(np.concatenate(all_actions, axis=0)).float()  # (N*T, action_dim*frameskip)
-        all_proprios = torch.from_numpy(np.concatenate(all_proprios, axis=0)).float()  # (N*T, proprio_dim)
-        
-        # Match norm_col_transform: mean(0).unsqueeze(0), std(0).unsqueeze(0)
-        self.action_mean = all_actions.mean(0).unsqueeze(0)  # (1, action_dim * frameskip)
-        self.action_std = all_actions.std(0).unsqueeze(0)    # (1, action_dim * frameskip)
-        
-        self.proprio_mean = all_proprios.mean(0).unsqueeze(0)  # (1, proprio_dim)
-        self.proprio_std = all_proprios.std(0).unsqueeze(0)    # (1, proprio_dim)
+        if len(all_actions) > 0:
+            all_actions = torch.from_numpy(np.concatenate(all_actions, axis=0)).float()  # (N*T, action_dim*frameskip)
+            self.action_mean = all_actions.mean(0).unsqueeze(0)  # (1, action_dim * frameskip)
+            self.action_std = all_actions.std(0).unsqueeze(0)    # (1, action_dim * frameskip)
+        else:
+            # Fallback: infer action width from an example in action_data or default to 1
+            example_shape = None
+            for v in self.action_data.values():
+                example = np.asarray(v)
+                if example.size > 0:
+                    example_shape = example.shape
+                    break
+            if example_shape is not None:
+                action_dim = example_shape[1]
+                width = int(action_dim * self.frameskip)
+            else:
+                width = 1
+            logging.warning("No action clips found for normalization; falling back to zeros/ones of width %s", width)
+            self.action_mean = torch.zeros((1, width), dtype=torch.float32)
+            self.action_std = torch.ones((1, width), dtype=torch.float32)
+
+        if len(all_proprios) > 0:
+            all_proprios = torch.from_numpy(np.concatenate(all_proprios, axis=0)).float()  # (N*T, proprio_dim)
+            self.proprio_mean = all_proprios.mean(0).unsqueeze(0)  # (1, proprio_dim)
+            self.proprio_std = all_proprios.std(0).unsqueeze(0)    # (1, proprio_dim)
+        else:
+            # Fallback: infer proprio dim from an example in proprio_data or default to 1
+            example_shape = None
+            for v in self.proprio_data.values():
+                example = np.asarray(v)
+                if example.size > 0:
+                    example_shape = example.shape
+                    break
+            if example_shape is not None:
+                pwidth = int(example_shape[1])
+            else:
+                pwidth = 1
+            logging.warning("No proprio clips found for normalization; falling back to zeros/ones of width %s", pwidth)
+            self.proprio_mean = torch.zeros((1, pwidth), dtype=torch.float32)
+            self.proprio_std = torch.ones((1, pwidth), dtype=torch.float32)
     
     def __len__(self):
         return len(self.samples)
