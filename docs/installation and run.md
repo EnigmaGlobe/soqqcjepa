@@ -224,3 +224,83 @@ Expected output includes latent evaluation metrics:
 - **Batches per epoch:** ~14,900 at `batch_size=128`
 - **Epoch time:** ~20 minutes on RTX 4070 Laptop GPU at batch_size=128
 - **Checkpoint format:** The `_object.ckpt` files are full `torch.save(pl_module)` pickles compatible with the downstream loading code.
+
+---
+
+## Windows automated setup (tested)
+
+The repository was verified on Windows 10/11 using PowerShell. The steps below show the exact commands used to create a compatible Python 3.11 `.venv`, install the (CPU) Python packages, add small stubs and patches required for the bundled third-party code, and run the Phase 1 smoke test.
+
+Run these commands from the repo root (`C:\new\soqqcjepa`) in PowerShell.
+
+1) Install Python 3.11 (if not already installed)
+
+```powershell
+winget install --id=Python.Python.3.11 -e
+```
+
+2) Create and activate the virtual environment (PowerShell)
+
+```powershell
+py -3.11 -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+.\.venv\Scripts\Activate.ps1
+python --version
+pip install -U pip setuptools wheel
+```
+
+3) Install Python dependencies (CPU wheel shown; replace the torch index with the CUDA wheel if you have CUDA 12.x)
+
+```powershell
+pip install stable-pretraining
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install lightning pytorch-lightning
+pip install timm einops
+pip install huggingface_hub datasets
+pip install seaborn webdataset swig av accelerate tensorboard tensorboardX hickle pycocotools wget gdown
+```
+
+Notes:
+- If you have CUDA 12.x and want GPU support, install the matching CUDA toolkit then use `--index-url https://download.pytorch.org/whl/cu124` for the `torch` install.
+- `av` and `pycocotools` require build wheels in some environments; installing Visual Studio Build Tools can help.
+
+4) Create the `stable_worldmodel.data` stub (only needed if you don't install the full package)
+
+```powershell
+mkdir stable_worldmodel\data -ErrorAction SilentlyContinue
+'' | Out-File stable_worldmodel\data\__init__.py -Encoding utf8
+@"
+from torch.utils.data import Dataset
+
+class VideoDataset(Dataset):
+        def __init__(self, *args, **kwargs):
+                raise NotImplementedError('Install full stable-worldmodel from GitHub for CLEVRER support')
+"@ | Out-File stable_worldmodel\data\dataset.py -Encoding utf8
+```
+
+5) Checkpoint downloader (repo includes `scripts/download_checkpoints.py`)
+
+```powershell
+python scripts\download_checkpoints.py
+```
+
+6) Windows / cross-device patches (applied during testing)
+
+- VideoSAUR checkpoint loading patched to use `map_location='cpu'` (file edited):
+    `src/third_party/videosaur/videosaur/models.py` — `checkpoint = torch.load(checkpoint_path, map_location='cpu')`
+- `stable_pretraining` signal logging lines wrapped with `hasattr(signal, ...)` guards for Windows: `.venv/Lib/site-packages/stable_pretraining/manager.py`
+
+If the installed package versions differ you may need to open the file and add the `if hasattr(signal, 'SIGUSR1'):` style guards manually.
+
+7) Run Phase 1 smoke test (inference-only)
+
+```powershell
+cd scripts\pusht
+python phase1_local_smoke.py --use-random-input
+```
+
+Expected: several `[phase1][PASS]` lines and a JSON summary written to `outputs\push_t_phase1_local_smoke.json` (this was observed during the test run).
+
+---
+
+If you want a single, re-runnable PowerShell script that performs all of the above (safe to run repeatedly), tell me and I'll add `scripts\setup_windows.ps1` to the repo.
