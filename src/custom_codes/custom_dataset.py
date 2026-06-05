@@ -247,6 +247,16 @@ class PushTSlotDataset(Dataset):
             all_proprios = torch.from_numpy(np.concatenate(all_proprios, axis=0)).float()  # (N*T, proprio_dim)
             self.proprio_mean = all_proprios.mean(0).unsqueeze(0)  # (1, proprio_dim)
             self.proprio_std = all_proprios.std(0).unsqueeze(0)    # (1, proprio_dim)
+            # Avoid zero std which causes division-by-zero (Inf) downstream.
+            # Replace zeros or NaNs in std with 1.0 (no scaling) to preserve values.
+            try:
+                self.proprio_std = torch.where(self.proprio_std == 0, torch.ones_like(self.proprio_std), self.proprio_std)
+                # replace NaNs if any
+                self.proprio_std = torch.nan_to_num(self.proprio_std, nan=1.0, posinf=1.0, neginf=1.0)
+            except Exception:
+                # Fallback for older torch versions without posinf/neginf kwargs
+                self.proprio_std = torch.where(self.proprio_std == 0, torch.ones_like(self.proprio_std), self.proprio_std)
+                self.proprio_std[torch.isnan(self.proprio_std)] = 1.0
         else:
             # Fallback: infer proprio dim from an example in proprio_data or default to 1
             example_shape = None
@@ -291,9 +301,25 @@ class PushTSlotDataset(Dataset):
         proprio = torch.from_numpy(proprio_raw[frame_indices]).float()
         
         # Normalize action and proprio (matching WrapTorchTransform behavior)
+        # Use safe std (avoid division by zero) and clamp extremes to stabilize AMP
         # Note: No nan_to_num here - that's done in forward pass like train_causalwm.py
-        action = (action - self.action_mean) / self.action_std
-        proprio = (proprio - self.proprio_mean) / self.proprio_std
+        try:
+            action_std_safe = torch.where(self.action_std < 1e-6, torch.ones_like(self.action_std), self.action_std)
+        except Exception:
+            action_std_safe = self.action_std
+            action_std_safe[action_std_safe == 0] = 1.0
+
+        try:
+            proprio_std_safe = torch.where(self.proprio_std < 1e-6, torch.ones_like(self.proprio_std), self.proprio_std)
+        except Exception:
+            proprio_std_safe = self.proprio_std
+            proprio_std_safe[proprio_std_safe == 0] = 1.0
+
+        action = (action - self.action_mean) / action_std_safe
+        proprio = (proprio - self.proprio_mean) / proprio_std_safe
+
+        # Note: do NOT clamp action/proprio here — keep true signal.
+        # Gradient clipping should be handled by the trainer instead.
         
         sample = {
             "pixels_embed": pixels_embed,  # (T, S, D)

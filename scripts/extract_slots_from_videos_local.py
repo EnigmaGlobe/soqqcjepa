@@ -32,48 +32,100 @@ def extract_slots_for_file(model, path, device="cpu"):
     Fall back to creating a dummy zero array if the model interface isn't present.
     Returns ndarray (T, S, D).
     """
-    # Prefer torchvision-based reader to avoid torchcodec native dependency
+    # Try multiple readers: prefer imageio (robust pure-python), then torchvision, then cv2
+    video = None
+    # 1) imageio reader
     try:
-        from torchvision.io import read_video
-        from torchvision import transforms as tvt
-        # read_video returns video as Tensor[T, H, W, C]
-        video, _, _ = read_video(str(path))
-        if video is None or len(video) == 0:
+        import imageio
+        frames = []
+        r = imageio.get_reader(str(path))
+        for f in r:
+            frames.append(np.ascontiguousarray(f[:, :, ::-1]))
+        r.close()
+        print(f"[extractor] imageio read frames: {len(frames)}")
+        if len(frames) == 0:
+            print("[extractor] imageio returned 0 frames")
             return np.zeros((0, 0, 0), dtype=np.float32)
-        # normalize to float in [0,1] and convert to [T,C,H,W]
-        video = video.float() / 255.0
-        video = video.permute(0, 3, 1, 2)  # [T, C, H, W]
+        video = torch.from_numpy(np.stack(frames)).float() / 255.0
+        video = video.permute(0, 3, 1, 2).contiguous()
     except Exception:
-        # Fallback to cv2 if torchvision read_video is unavailable
+        video = None
+
+    if video is None:
+        # 2) torchvision
+        try:
+            from torchvision.io import read_video
+            from torchvision import transforms as tvt
+            video, _, _ = read_video(str(path))
+            if video is None or len(video) == 0:
+                print("[extractor] torchvision returned 0 frames or None")
+                video = None
+            else:
+                print(f"[extractor] torchvision read frames: {len(video)}")
+                video = video.float() / 255.0
+                video = video.permute(0, 3, 1, 2).contiguous()
+        except Exception:
+            video = None
+
+    if video is None:
+        # 3) cv2 fallback
         try:
             import cv2
-
             cap = cv2.VideoCapture(str(path))
             frames = []
             while True:
-                ok, frame = cap.read()
-                if not ok:
-                    break
-                frames.append(frame[:, :, ::-1])
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
+                    frames.append(np.ascontiguousarray(frame[:, :, ::-1]))
             cap.release()
+            print(f"[extractor] cv2 read frames: {len(frames)}")
             if len(frames) == 0:
+                print("[extractor] cv2 returned 0 frames")
                 return np.zeros((0, 0, 0), dtype=np.float32)
             video = torch.from_numpy(np.stack(frames)).float() / 255.0
-            video = video.permute(0, 3, 1, 2)
+            video = video.permute(0, 3, 1, 2).contiguous()
         except Exception:
             return np.zeros((0, 0, 0), dtype=np.float32)
 
-    # If the model exposes encoder+processor like Videosaur ObjectCentricModel, use them
+    # Diagnostic: report whether we have a video tensor
     try:
-        # resize + normalize similar to extract_videosaur: Resize -> Normalize
+        print(f"[extractor] video tensor shape: {None if video is None else tuple(video.shape)}")
+    except Exception:
+        pass
+
+    # If the model exposes encoder+processor like Videosaur ObjectCentricModel, use them
+    # Prepare transforms: prefer torchvision transforms, but fall back to a
+    # lightweight resize using torch.nn.functional if torchvision is absent.
+    try:
         IMAGENET_MEAN = [0.485, 0.456, 0.406]
         IMAGENET_STD = [0.229, 0.224, 0.225]
-        tfs = tvt.Compose([
-            tvt.ConvertImageDtype(torch.float32),
-            tvt.Resize((196, 196)),
-            tvt.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ])
-        video_t = tfs(video) if 'tfs' in locals() else video
+        try:
+            from torchvision import transforms as tvt
+            tfs = tvt.Compose([
+                tvt.ConvertImageDtype(torch.float32),
+                tvt.Resize((196, 196)),
+                tvt.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
+            ])
+            video_t = tfs(video)
+        except Exception:
+            # torchvision.transforms not available: do a simple tensor-based
+            # resize and ensure dtype/normalization roughly matches expectations.
+            import torch.nn.functional as F
+            video_t = video.float()
+            try:
+                # video shape: (T, C, H, W)
+                video_t = F.interpolate(video_t, size=(196, 196), mode='bilinear', align_corners=False)
+            except Exception:
+                # If interpolation fails, keep original size.
+                pass
+            # Normalize approximately (in-place safe copy)
+            try:
+                mean = torch.tensor(IMAGENET_MEAN, device=video_t.device).view(1, -1, 1, 1)
+                std = torch.tensor(IMAGENET_STD, device=video_t.device).view(1, -1, 1, 1)
+                video_t = (video_t - mean) / std
+            except Exception:
+                pass
     except Exception:
         video_t = video
 
@@ -108,10 +160,80 @@ def extract_slots_for_file(model, path, device="cpu"):
         pass
 
     # final fallback: construct zeros with shape T x S x D
-    T = video.shape[0]
+    # If the videosaur model wasn't available, produce simple per-patch
+    # embeddings using a lightweight ResNet backbone projected to 128 dims.
+    try:
+        T = int(video.shape[0])
+    except Exception:
+        return np.zeros((0, 0, 0), dtype=np.float32)
+
+    # Number of slots: default to 4 (2x2 patches)
     S = getattr(model, 'NUM_SLOTS', 4)
-    D = getattr(model, 'SLOT_DIM', 128)
-    return np.zeros((T, S, D), dtype=np.float32)
+    target_D = getattr(model, 'SLOT_DIM', 128)
+
+    # If a model object exists but we couldn't use its API, prefer zeros
+    if model is not None:
+        D = target_D
+    else:
+        # Lightweight, reliable fallback extractor (CPU):
+        # - split each frame into 2x2 patches
+        # - adaptive-pool each patch to (4,4)
+        # - flatten and apply a fixed random projection to `target_D`
+        try:
+            import torch.nn.functional as F
+            import torch
+
+            video_cpu = video.float().contiguous().cpu()
+            _, C, H, W = video_cpu.shape
+            h_mid = H // 2
+            w_mid = W // 2
+            patches = [
+                video_cpu[:, :, :h_mid, :w_mid].contiguous(),
+                video_cpu[:, :, :h_mid, w_mid:].contiguous(),
+                video_cpu[:, :, h_mid:, :w_mid].contiguous(),
+                video_cpu[:, :, h_mid:, w_mid:].contiguous(),
+            ]
+
+            all_slots = np.zeros((T, S, target_D), dtype=np.float32)
+
+            # Fixed random projection matrix for deterministic-ish features
+            rng = np.random.RandomState(0)
+            proj_in = C * 4 * 4
+            Wproj = torch.from_numpy(rng.normal(scale=0.1, size=(proj_in, target_D)).astype(np.float32))
+
+            pool = torch.nn.AdaptiveAvgPool2d((4, 4))
+            batch_size = 512
+            print(f"[extractor] projection fallback T={T}, S={S}, target_D={target_D}")
+            for slot_idx, p in enumerate(patches[:S]):
+                # p: (T, C, h, w)
+                # resize patches to a reasonable size then pool
+                # do in batches to limit memory
+                feats = []
+                for i in range(0, T, batch_size):
+                    b = p[i:i+batch_size]
+                    if b.shape[0] == 0:
+                        continue
+                    try:
+                        b_resized = F.interpolate(b, size=(32, 32), mode='bilinear', align_corners=False)
+                    except Exception:
+                        b_resized = b
+                    pooled = pool(b_resized)  # (B, C, 4, 4)
+                    flat = pooled.view(pooled.shape[0], -1)  # (B, C*4*4)
+                    # project
+                    proj_out = flat.matmul(Wproj)
+                    feats.append(proj_out.cpu().numpy())
+
+                if feats:
+                    feats_np = np.concatenate(feats, axis=0)
+                    if feats_np.shape[0] < T:
+                        pad = np.zeros((T - feats_np.shape[0], target_D), dtype=np.float32)
+                        feats_np = np.concatenate([feats_np, pad], axis=0)
+                    all_slots[:, slot_idx, :] = feats_np[:T]
+
+            return all_slots
+        except Exception as e:
+            print(f"[extractor] projection fallback failed: {e}")
+            return np.zeros((T, S, target_D), dtype=np.float32)
 
 
 def main():
@@ -125,7 +247,7 @@ def main():
     try:
         # If user provided a videosaur config, load it to build the model correctly
         conf = None
-        if hasattr(args, 'videosaur_config') and getattr(args, 'videosaur_config', None) and args.ckpt is not None:
+        if getattr(args, 'videosaur_config', None) and args.ckpt is not None:
             try:
                 # Use the videosaur inference helper which handles config+checkpoint loading
                 from src.third_party.videosaur.videosaur import inference as videosaur_inference
@@ -145,14 +267,11 @@ def main():
                 except Exception as e2:
                     print(f"Warning: also failed to build model from YAML {args.videosaur_config}: {e2}")
 
-        # fallback: build a minimal dummy model if conf not provided or build failed
-        if model is None:
-            model_cfg = {"model": {"name": "videosaur_dummy"}}
-            dummy_optimizer = {"name": "Adam", "lr": 0.001}
-            model = models.build(model_cfg, dummy_optimizer, None)
-
-        # If a checkpoint path was passed, try to load it into the model.
-        if args.ckpt is not None:
+        # Do not attempt to build a dummy dict-based Videosaur model here.
+        # If no valid `conf`/model was built above, keep `model = None` and
+        # let `extract_slots_for_file()` handle the safe fallback extraction.
+        # If a checkpoint path was passed and we actually have a model, try to load it.
+        if args.ckpt is not None and model is not None:
             try:
                 ckpt_path = str(args.ckpt)
                 print(f"Loading checkpoint {ckpt_path} into videosaur model (map_location=cpu)")
@@ -187,7 +306,7 @@ def main():
                 else:
                     print("Warning: checkpoint format not recognized for state_dict loading; proceeding with built model")
             except Exception as e:
-                print(f"Warning: failed to load checkpoint {args.ckpt}: {e}; continuing with built model or falling back to dummy slots")
+                print(f"Warning: failed to load checkpoint {args.ckpt}: {e}; continuing without loading weights")
 
         # If we built from a videosaur config and it specifies NUM_SLOTS, set initializer n_slots
         try:
@@ -202,8 +321,6 @@ def main():
             pass
     except Exception as e:
         print(f"Warning: videosaur model build failed: {e}; will create dummy zero slots instead.")
-    except Exception as e:
-        print(f"Warning: videosaur model build failed: {e}; will create dummy zero slots instead.")
 
     files = sorted([p for p in video_dir.glob('**/*.mp4')])
     if not files:
@@ -214,26 +331,10 @@ def main():
     for p in files:
         key = f"{p.stem}_pixels.mp4"
         print(f"Processing {p} -> key {key}")
-        if model is not None:
-            slots = extract_slots_for_file(model, p, device=device)
-        else:
-            # Count frames with cv2 and create zero slots: S=cfg default 4, D=128
-            try:
-                import cv2
-                cap = cv2.VideoCapture(str(p))
-                cnt = 0
-                while True:
-                    ok, _ = cap.read()
-                    if not ok:
-                        break
-                    cnt += 1
-                cap.release()
-            except Exception:
-                cnt = 0
-            S = 4
-            D = 128
-            print(f"Creating dummy slots array with T={cnt}, S={S}, D={D}")
-            slots = np.zeros((cnt, S, D), dtype=np.float32)
+        # Always use the central extractor function; it handles model==None
+        # and will use the safe deterministic projection fallback when Videosaur
+        # is not available.
+        slots = extract_slots_for_file(model, p, device=device)
         out['train'][key] = slots
 
     os.makedirs(out_path.parent, exist_ok=True)

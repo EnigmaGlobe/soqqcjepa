@@ -41,6 +41,7 @@ def parse_args():
     p.add_argument("--slotpath", required=True, help="Path to slots pickle (produced by slot extractor)")
     p.add_argument("--save-dir", required=True, help="Directory to write the three meta pickles into")
     p.add_argument("--sep", default=",", help="CSV separator (default: ,)")
+    p.add_argument("--quiet", action="store_true", help="Suppress verbose per-row mapping/info messages")
     return p.parse_args()
 
 
@@ -212,18 +213,21 @@ def main():
                         alt_key = f"{alt}_pixels.mp4"
                         if alt_key in train_action:
                             key = alt_key; split = 'train'; tried = True
-                            print(f"Info: remapped episode {episode} -> {alt} for train key {key}")
+                            if not getattr(args, 'quiet', False):
+                                print(f"Info: remapped episode {episode} -> {alt} for train key {key}")
                             break
                         if alt_key in val_action:
                             key = alt_key; split = 'val'; tried = True
-                            print(f"Info: remapped episode {episode} -> {alt} for val key {key}")
+                            if not getattr(args, 'quiet', False):
+                                print(f"Info: remapped episode {episode} -> {alt} for val key {key}")
                             break
                     if not tried:
                         # if there's exactly one train video, map everything to it (useful for single-video local data)
                         if len(train_action) == 1 and len(val_action) == 0:
                             key = next(iter(train_action.keys()))
                             split = 'train'
-                            print(f"Info: mapped episode {episode} to single available train video {key}")
+                            if not getattr(args, 'quiet', False):
+                                print(f"Info: mapped episode {episode} to single available train video {key}")
                         else:
                             # unknown video key, skip
                             print(f"Warning: skipping row with episode {episode} because no matching slot key found")

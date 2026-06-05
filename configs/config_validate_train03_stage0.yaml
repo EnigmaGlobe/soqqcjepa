@@ -1,0 +1,56 @@
+defaults:
+  - _self_
+  - override hydra/hydra_logging: disabled
+  - override hydra/job_logging: disabled
+
+hydra:
+  output_subdir: null
+
+dataset_name: pusht_expert
+# Point to stage-0 pickles that `split_validation_by_stage.py` will create
+embedding_dir: 'checkpoints/validation_staged/train_03_recording_stage_0_exploration_slots.pkl'
+cache_dir: "~/.stable_worldmodel"
+action_dir: 'checkpoints/validation_staged/train_03_recording_stage_0_exploration_actions.pkl'
+proprio_dir: 'checkpoints/validation_staged/train_03_recording_stage_0_exploration_proprio.pkl'
+state_dir: 'checkpoints/validation_staged/train_03_recording_stage_0_exploration_state.pkl'
+
+output_model_name: causal_world_model
+
+trainer:
+  max_epochs: 1
+  devices: auto
+  accelerator: cpu
+  precision: 32
+
+batch_size: 64
+num_workers: 0
+
+seed: 42
+
+image_size: 224
+patch_size: 16
+
+n_steps: ${eval:'${dinowm.num_preds} + ${dinowm.history_size}'}
+frameskip: 3
+
+dinowm:
+  history_size: 5
+  num_preds: 3
+  proprio_dim: 4
+  proprio_embed_dim: 10
+  action_dim: 2
+  action_embed_dim: 10
+
+num_masked_slots: 2
+
+predictor:
+  depth: 6
+  heads: 4
+  mlp_dim: 2048
+  dim_head: 64
+  dropout: 0.1
+  emb_dropout: 0.0
+
+videosaur:
+  NUM_SLOTS: 4
+  SLOT_DIM: 128

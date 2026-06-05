@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stable_worldmodel"
+version = "0.0.1"
+description = "Local stable_worldmodel shim for local training"
+authors = [ { name = "local", email = "local@example.com" } ]
+dependencies = []

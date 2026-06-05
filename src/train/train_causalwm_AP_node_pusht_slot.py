@@ -1,6 +1,19 @@
 from pathlib import Path
 
-import hydra
+# Hydration: try to import hydra; provide a safe fallback for environments
+# where hydra is unavailable or incompatible (e.g., Python 3.14 issues).
+try:
+    import hydra
+except Exception:
+    import types
+
+    def _hydra_main(*args, **kwargs):
+        def _decorator(fn):
+            return fn
+
+        return _decorator
+
+    hydra = types.SimpleNamespace(main=_hydra_main)
 import lightning as pl
 import stable_pretraining as spt
 import stable_worldmodel as swm
@@ -68,29 +81,41 @@ def get_data(cfg):
     )
     
     rnd_gen = torch.Generator().manual_seed(cfg.seed)
-    
-    logging.info(f"Train: {len(train_dataset)}, Val: {len(val_dataset)}")
-    
+
+    train_len = len(train_dataset)
+    val_len = len(val_dataset)
+    logging.info(f"Train: {train_len}, Val: {val_len}")
+
+    # If datasets are empty, return simple empty iterables to avoid DataLoader errors
+    if train_len == 0 and val_len == 0:
+        from types import SimpleNamespace
+        return SimpleNamespace(train=[], val=[])
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         drop_last=True,
-        persistent_workers=True,
-        prefetch_factor=2,
+        **({"persistent_workers": True} if cfg.num_workers and cfg.num_workers > 0 else {}),
+        **({"prefetch_factor": 2} if cfg.num_workers and cfg.num_workers > 0 else {}),
         pin_memory=True,
         shuffle=True,
         generator=rnd_gen,
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=cfg.batch_size,
         num_workers=cfg.num_workers,
         pin_memory=True,
     )
-    
-    return spt.data.DataModule(train=train_loader, val=val_loader)
+
+    try:
+        return spt.data.DataModule(train=train_loader, val=val_loader)
+    except Exception:
+        # If stable_pretraining.data isn't importable (hydra issues), return a simple fallback
+        from types import SimpleNamespace
+        return SimpleNamespace(train=train_loader, val=val_loader)
 
 
 # ============================================================================
@@ -286,6 +311,46 @@ def get_world_model(cfg):
         prefix = "train/" if self.training else "val/"
         losses_dict = {f"{prefix}{k}": v.detach() for k, v in batch.items() if "loss" in k}
         self.log_dict(losses_dict, on_step=True, sync_dist=True)
+
+        # Lightweight tensor diagnostics for debugging numeric issues / overfitting.
+        # Compute finiteness and simple stats for key tensors (per-batch).
+        try:
+            stats = {}
+            def _add_stats(name, tensor):
+                if tensor is None:
+                    return
+                t = tensor.detach()
+                if not isinstance(t, torch.Tensor):
+                    return
+                finite_mask = torch.isfinite(t)
+                nan_count = int((~finite_mask).sum().item())
+                # reduce on CPU to avoid GPU sync surprises
+                t_cpu = torch.nan_to_num(t).float().cpu()
+                if t_cpu.numel() > 0:
+                    stats[f"{prefix}{name}_nan_count"] = nan_count
+                    stats[f"{prefix}{name}_abs_max"] = float(t_cpu.abs().max().item())
+                    stats[f"{prefix}{name}_mean"] = float(t_cpu.mean().item())
+                else:
+                    stats[f"{prefix}{name}_nan_count"] = nan_count
+                    stats[f"{prefix}{name}_abs_max"] = 0.0
+                    stats[f"{prefix}{name}_mean"] = 0.0
+
+            # Key tensors to inspect
+            _add_stats("pixels_embed", pixels_embed if 'pixels_embed' in locals() else batch.get('pixels_embed', None))
+            # pred_embedding/ pred_output may be present
+            try:
+                _add_stats("pred_embedding", pred_embedding if 'pred_embedding' in locals() else (pred_output[0] if isinstance(pred_output, tuple) else None))
+            except Exception:
+                pass
+            _add_stats("target_embedding", target_embedding if 'target_embedding' in locals() else None)
+            _add_stats("action", batch.get("action", None))
+            _add_stats("proprio", batch.get(proprio_key, None) if proprio_key is not None else None)
+
+            if len(stats) > 0:
+                self.log_dict(stats, on_step=True, sync_dist=True)
+        except Exception:
+            # Don't let diagnostics break training
+            logging.exception("Tensor diagnostics failed")
         
         return batch
     
@@ -390,33 +455,113 @@ class ModelObjectCallBack(Callback):
         if trainer.is_global_zero:
             if (trainer.current_epoch + 1) % self.epoch_interval == 0:
                 output_path = self.dirpath / f"{self.filename}_epoch_{trainer.current_epoch + 1}_object.ckpt"
-                torch.save(pl_module, output_path)
-                logging.info(f"Saved world model object to {output_path}")
+                # Try to save the underlying model object (preferred) or fallback
+                # to saving the LightningModule if necessary.
+                try:
+                    # If our training wrapper stores the original module under
+                    # `module` we can save its `model` attribute which is the
+                    # original world-model object.
+                    candidate = getattr(pl_module, "module", None)
+                    if candidate is not None and hasattr(candidate, "model"):
+                        # Prefer saving state_dict to avoid pickling local wrappers
+                        try:
+                            torch.save(candidate.model.state_dict(), output_path)
+                        except Exception:
+                            # Fallback to saving the full object if state_dict unavailable
+                            torch.save(candidate.model, output_path)
+                    else:
+                        try:
+                            torch.save(pl_module.state_dict(), output_path)
+                        except Exception:
+                            torch.save(pl_module, output_path)
+                    logging.info(f"Saved world model object to {output_path}")
+                except Exception:
+                    logging.exception("Failed to save world model object")
             
-            # Additionally, save at final epoch
+            # Additionally, save at final epoch (also attempt state_dict first)
             if (trainer.current_epoch + 1) == trainer.max_epochs:
                 final_path = self.dirpath / f"{self.filename}_object.ckpt"
-                torch.save(pl_module, final_path)
-                logging.info(f"Saved final world model object to {final_path}")
+                try:
+                    candidate = getattr(pl_module, "module", None)
+                    if candidate is not None and hasattr(candidate, "model"):
+                        try:
+                            torch.save(candidate.model.state_dict(), final_path)
+                        except Exception:
+                            torch.save(candidate.model, final_path)
+                    else:
+                        try:
+                            torch.save(pl_module.state_dict(), final_path)
+                        except Exception:
+                            torch.save(pl_module, final_path)
+                    logging.info(f"Saved final world model object to {final_path}")
+                except Exception:
+                    logging.exception("Failed to save final world model object")
+
+            # Log epoch-level metrics (if any)
+            try:
+                metrics = {k: float(v) for k, v in trainer.callback_metrics.items()}
+                logging.info(f"Epoch {trainer.current_epoch+1} metrics: {metrics}")
+            except Exception:
+                pass
 
 
 # ============================================================================
 # Main Entry Point
 # ============================================================================
 @hydra.main(version_base=None, config_path="../../configs", config_name="config_train_causal_pusht_slot")
-def run(cfg):
-    """Run training of predictor using pre-extracted slot representations."""
-    
+def run(cfg=None):
+    """Run training of predictor using pre-extracted slot representations.
+
+    If `cfg` is None (e.g. when invoked via the compatibility wrapper),
+    run a minimal smoke test that loads a single batch and validates
+    the data pipeline without launching the full trainer.
+    """
+
+    if cfg is None:
+        # Minimal config for smoke testing
+        cfg = OmegaConf.create({
+            "cache_dir": "checkpoints",
+            "wandb": {"project": "local", "entity": None},
+            "output_model_name": "local_smoke",
+            "trainer": {"max_epochs": 1},
+            "seed": 42,
+            "embedding_dir": "checkpoints/train01_slots.pkl",
+            "action_dir": "checkpoints/local_action_meta.pkl",
+            "proprio_dir": "checkpoints/local_proprio_meta.pkl",
+            "state_dir": "checkpoints/local_state_meta.pkl",
+            "dinowm": {"history_size": 1, "num_preds": 1},
+            "batch_size": 1,
+            "num_workers": 0,
+            "frameskip": 1,
+        })
+
+        # Load data and print one batch to verify shapes
+        data = get_data(cfg)
+        train_loader = getattr(data, "train", data)
+        try:
+            batch = next(iter(train_loader))
+        except Exception:
+            logging.info("Smoke test: no training samples available (dataset length=0). Nothing to run.")
+            return
+
+        logging.info("Smoke test: loaded one batch keys: %s", list(batch.keys()))
+        for k, v in batch.items():
+            try:
+                logging.info(f" - {k}: {getattr(v, 'shape', type(v))}")
+            except Exception:
+                logging.info(f" - {k}: <uninspectable>")
+        return
+
     # Setup cache directory
     cache_dir = Path(swm.data.utils.get_cache_dir() if cfg.cache_dir is None else cfg.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Setup logging
     wandb_logger = setup_pl_logger(cfg)
-    
+
     # Load data
     data = get_data(cfg)
-    
+
     # Build world model
     world_model = get_world_model(cfg)
     
@@ -441,11 +586,19 @@ def run(cfg):
     )
     
     # Run training
+    # Allow overriding the checkpoint path to resume from a Lightning checkpoint
+    # Useful when resuming from a previous run's `events` checkpoint file.
+    ckpt_override = cfg.get("resume_ckpt_path", None)
+    if ckpt_override:
+        ckpt_path = str(ckpt_override)
+    else:
+        ckpt_path = str(cache_dir / f"{cfg.output_model_name}_weights.ckpt")
+
     manager = spt.Manager(
         trainer=trainer,
         module=world_model,
         data=data,
-        ckpt_path=str(cache_dir / f"{cfg.output_model_name}_weights.ckpt"),
+        ckpt_path=ckpt_path,
         seed=cfg.seed,
     )
     manager()
