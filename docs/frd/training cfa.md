@@ -1,281 +1,568 @@
-I think your screening logic is strong: you moved from “which metric sounds right?” to “which bundle behaves consistently at episode level.” The main issue now is not ranking alone, but choosing what claim each bundle can safely support.
+Source data:
+D:\Soqqle\v2\soqqcjepa\testdata\1\actions_frame_train_01.csv
+D:\Soqqle\v2\soqqcjepa\testdata\1\observations_frame_train_01.csv
 
-Thought for 24s
+Yes — “performance” is a defensible higher-level construct, but for your case I would name it more specifically:
 
-I think this is a good result, but I would interpret it slightly differently:
+PushBlock Episode Performance Quality
+or, if the goal is selecting training data:
 
-I would not choose combo2 as the main bundle yet.
-Combo2 looks attractive because the top split is strong, especially alpha = 0.783 and CFI = 0.871. But the bottom split CFI = NaN is a warning, not just a technical inconvenience. It probably means the bundle only behaves well when episodes already have enough near-goal behaviour. For weaker episodes, variables like near_goal_fraction and stay_near_after_best may have too little variation or may become structurally uninformative.
+Trajectory Quality for PushBlock Training
 
-So combo2 is useful, but I would describe it as a spatial stability / near-goal maintenance bundle, not a general performance construct.
+That wording fits both the RL literature and the CFA/SEM logic.
 
-I would choose combo3 as the more defensible main bundle.
-Combo3 has the best overall alpha:
+What I found from studies
 
-alpha = 0.760
+In RL and robot-learning studies, researchers usually do not use CFA to choose training data. They more often use trajectory-level performance indicators, such as return/reward, success rate, task completion, or benchmark score. For example, D4RL treats offline RL as learning from static datasets and highlights dataset types such as human demonstrations, hand-designed controllers, multitask data, and mixtures of policies. That is very close to your problem: deciding which collected data are useful for training.
 
-and both top and bottom halves remain estimable:
+There is also direct support for the idea that not all trajectories are equally useful. Offline RL work on imbalanced datasets argues that when a dataset is dominated by suboptimal trajectories, algorithms may be forced to imitate weak behaviour; they therefore propose sampling strategies that focus more on “good data.” Another paper says the target policy’s performance is strongly related to the trajectory return distribution of the dataset and proposes reweighting mixed datasets toward higher-return behaviour.
 
-top alpha = 0.699, CFI = 0.748
-bottom alpha = 0.723, CFI = 0.421
+So your general idea is strong: you are not just measuring the agent; you are trying to identify which episodes/trajectories are high-quality training examples.
 
-The fit is not strong, but it survives the split. That matters because your stated goal is not only to find the strongest bundle overall, but to check whether the bundle “stays meaningful after splitting.”
+Where CFA fits better
 
-The variables also make conceptual sense together:
+CFA is more common in simulation training, VR training, and psychometric-style assessment than in standard RL benchmarking. One VR training SEM study created a latent variable called user simulation performance, measured from objective behavioural indicators: time on task, error count, question count, and fixation on a checklist. The same paper reports that CFA/SEM was used to test the hypothesised model, with fit indices such as CFI and RMSEA.
 
-neg_final_goal_distance: how close the agent ended
-neg_best_goal_distance: how close the agent ever got
-final_progress_ratio: how much of the task trajectory was completed
-neg_goal_regression: whether the agent preserved or lost progress
+Another VR assessment study used CFA to build a four-factor model from VR-based tests, with domains such as Balance and Gait, Decision-Making, Manual Dexterity, and Memory, and then generated composite domain scores. This supports your approach: using behavioural data to create higher-level constructs is acceptable, as long as the construct is clearly defined before testing.
 
-That gives a clearer episode-level story: approach, progress, retention, and end-state quality.
+Best construct for your case
 
-My recommendation would be:
+I would use this as the main construct:
 
-Use combo3_spatial_retention as the main defensible bundle.
-Use combo2_spatial_stability as a secondary/sensitivity bundle, especially if you want to discuss near-goal stability among better-performing episodes.
+PushBlock Episode Performance Quality
 
-I would phrase the conclusion like this:
+Definition:
 
-The spatial retention bundle was selected as the most defensible candidate because it showed the strongest overall internal consistency and remained estimable in both top and bottom episode splits. Although CFA fit was modest, the bundle retained interpretable reliability across performance levels, unlike the spatial stability bundle, whose bottom-half CFA did not produce a usable CFI. The spatial stability bundle may still be useful as a secondary indicator of near-goal maintenance, particularly among higher-performing episodes.
+The degree to which an episode moves the block toward the goal, preserves useful progress, and does so efficiently enough to be useful as training data.
 
-For the next pass, I would optimize only inside the spatial family. I would try variants around combo2 and combo3, but penalize any bundle that gives NaN or unstable CFA in either split. The goal should not be maximum top-half fit; it should be stable interpretability across the whole performance range.
+This is better than just calling it “performance,” because it tells the reader what performance means in PushBlock.
 
-A good next screening rule could be:
+I would break it into three subconstructs:
 
-alpha between about 0.70 and 0.85 overall,
-alpha acceptable in both top and bottom halves,
-no NaN CFA fit in either split,
-each metric has a clear conceptual role,
-avoid bundles dominated by threshold variables that only work when the agent reaches the goal area.
+Higher-level construct Meaning Possible indicators
+Task Achievement Did the block reach or approach the goal? neg_final_goal_distance, neg_best_goal_distance, final_progress_ratio
+Progress Retention Did the episode preserve useful progress instead of losing it? neg_goal_regression, near_goal_fraction, stay_near_after_best
+Execution Efficiency Did the episode achieve progress with fewer wasted steps/time? neg_episode_steps, log_progress_rate, reward_rate
 
-So yes: your screening is working. The important decision is that combo2 is practically strong but conditional, while combo3 is weaker in fit but more defensible as the main construct.
+This gives you a stronger theoretical story than one flat “performance” factor.
 
-actually we are using pushblock data and kind of measuring the performance
-Thought for a couple of seconds
+CFA model I would ask the other AI to test
 
-Yes — that changes the interpretation in an important way.
+Try this first as a three-factor correlated model:
 
-For PushBlock, I would not frame the bundle as a broad “spatial ability” or “spatial retention” construct. It is better to frame it as an episode-level task performance construct: how well the agent moved the block toward the goal and maintained useful progress.
+TaskAchievement =~
+neg_final_goal_distance +
+neg_best_goal_distance +
+final_progress_ratio
 
-So the metrics should be read in relation to the block-goal task, not general navigation.
-
-Your strongest bundle should probably be described as something like:
-
-PushBlock task performance
-or
-Block-to-goal performance quality
-or
-Episode-level block placement performance
-
-In that case, combo3 actually makes even more sense as the main bundle:
-
-neg_final_goal_distance = the block ended closer to the goal
-neg_best_goal_distance = the block reached a good position at some point
-final_progress_ratio = the episode produced meaningful task progress
-neg_goal_regression = the agent did not lose too much progress after reaching a better state
-
-This is not only “spatial retention”; it is closer to:
-
-how effectively the episode moved the block toward the goal and preserved that progress by the end of the episode.
-
-Combo2 is still useful, but I would now treat it more specifically as near-goal stabilization:
-
-near_goal_fraction
+ProgressRetention =~
+neg_goal_regression +
+near_goal_fraction +
 stay_near_after_best
 
-These are meaningful only when the block actually gets close enough to the goal. That explains why combo2 performs well in the top half but breaks in the bottom half. In weaker PushBlock episodes, the block may never reach the near-goal region, so those variables become sparse, flat, or not very informative.
+ExecutionEfficiency =~
+neg_episode_steps +
+log_progress_rate +
+reward_rate
 
-So my revised recommendation is:
+TaskAchievement ~~ ProgressRetention
+TaskAchievement ~~ ExecutionEfficiency
+ProgressRetention ~~ ExecutionEfficiency
 
-Main performance bundle: combo3_spatial_retention
-Rename it to something performance-oriented, such as:
+Then, if that works, try a higher-order performance model:
 
-combo3_pushblock_performance_retention
+TaskAchievement =~
+neg_final_goal_distance +
+neg_best_goal_distance +
+final_progress_ratio
 
-or simpler:
+ProgressRetention =~
+neg_goal_regression +
+near_goal_fraction +
+stay_near_after_best
 
-PushBlock Performance Bundle
+ExecutionEfficiency =~
+neg_episode_steps +
+log_progress_rate +
+reward_rate
 
-Then use combo2 as a secondary metric family:
+PushBlockPerformance =~
+TaskAchievement +
+ProgressRetention +
+ExecutionEfficiency
 
-PushBlock Near-Goal Stability Bundle
+This is the most “higher-level construct” version.
 
-The paper/report interpretation could be:
+My recommendation
 
-Because the task is PushBlock, the selected metrics were interpreted as indicators of episode-level task performance rather than general spatial behaviour. The strongest defensible bundle was the performance-retention bundle, which combined final block-goal distance, best achieved block-goal distance, final progress, and regression from the best achieved state. This bundle remained estimable in both top and bottom episode halves, suggesting that it captures performance variation across both stronger and weaker episodes. By contrast, the near-goal stability bundle showed stronger fit in the top half but became unstable in the bottom half, suggesting that near-goal metrics are more meaningful once the agent has already achieved sufficient task progress.
+Use PushBlock Episode Performance Quality as the main construct.
 
-So yes — for PushBlock, I would definitely shift the wording from spatial bundle to task performance bundle. The construct is not “spatial stability” in general; it is block movement performance toward the goal.
+Use these three dimensions:
 
-Phase4c Reward Distance Top Combined
-Phase4c Reward Distance Bottom Combined
-why not you look at my data and suggest a few options>>>>>???? i can then give ur advice / suggestions to the other ai dude to try 
+Task Achievement
+Progress Retention
+Execution Efficiency
 
-Great idea — this is exactly the right next move. I’ll inspect the top/bottom CSVs directly, check what variables are actually available, then suggest a few candidate PushBlock performance bundles your other AI can test.
+Then rank episodes using the CFA factor score or a validated composite score.
 
-A first useful pattern: the “top” file has almost no variation in success/reward ceiling variables. success_proxy is 1 for all top episodes, and max_reward is basically fixed, so I would avoid those inside the main latent bundle.
+One important caution: CFA assumes the indicators reflect an underlying construct. But in your case, some indicators are mathematically related, such as final distance and final progress ratio. That means you should present this carefully as a validated episode-quality score, not as a deep psychological latent trait. CFA best-practice guidance also emphasizes that the measurement model should be selected using prior validity evidence, not only because it gives good fit.
 
-Thought for 2m 37s
+A clean sentence for your paper/report could be:
 
-Yes — I looked at the two CSVs. Very useful. Based on your actual PushBlock top/bottom data, I would suggest trying these candidate bundles next.
+Episode-level PushBlock performance quality was modelled as a higher-order construct reflecting task achievement, progress retention, and execution efficiency. This construct was used to identify trajectories that were more suitable for subsequent training, rather than relying on reward alone.
 
-You have 1430 top episodes + 1430 bottom episodes in these files. The strongest lesson is:
+give me the proposed calculation for the metrics for the variables
+Thought for 25s
 
-Do not put success_proxy, max_reward, or reward_score inside the main performance bundle.
-In the top split, success_proxy = 1 for every row and max_reward is almost fixed. So those variables cannot help a latent construct after splitting.
+Yes — below is the proposed calculation plan for your CFA variables. The key idea is: first convert your raw PushBlock frame/step data into episode-level metrics, then use those metrics as CFA indicators. Your raw data has episode_id, step_index, reward, agent position, block position, block velocity, and goal position, so it is suitable for this episode-level transformation.
 
-Also important:
-normalized_task_progress appears to be:
+0. First create the base distance variable
 
+Use block-to-goal distance, not agent-to-goal distance, because PushBlock performance depends on moving the block to the goal.
+
+For each row/frame:
+
+block_goal_distance =
+sqrt(
+(block_pos_x - goal_pos_x)^2 +
+(block_pos_z - goal_pos_z)^2
+)
+
+Use the x-z plane because this is a ground-plane task. I would ignore y unless your block can move vertically.
+
+Also calculate:
+
+block_speed =
+sqrt(block_vel_x^2 + block_vel_z^2)
+
+Then group by:
+
+run_id + episode_id
+
+Each episode becomes one row.
+
+Construct 1: Task Achievement
+
+This construct means:
+
+Did the episode move the block close to the goal?
+
+These are the strongest CFA indicators for the main “performance” construct.
+
+1. start_goal_distance
+
+Distance from block to goal at the beginning of the episode.
+
+start_goal_distance = first(block_goal_distance)
+
+Use the first valid row after removing the init row.
+
+2. final_goal_distance
+
+Distance from block to goal at the end of the episode.
+
+final_goal_distance = last(block_goal_distance)
+
+Lower is better, so for CFA use:
+
+neg_final_goal_distance = -final_goal_distance
+
+Interpretation:
+
+Higher value = block ended closer to the goal.
+
+3. best_goal_distance
+
+Closest the block ever got to the goal during the episode.
+
+best_goal_distance = min(block_goal_distance)
+
+For CFA:
+
+neg_best_goal_distance = -best_goal_distance
+
+Interpretation:
+
+Higher value = block reached a better position at some point.
+
+4. final_progress_ratio
+
+How much progress was preserved by the end.
+
+final_progress_ratio =
+(start_goal_distance - final_goal_distance) / start_goal_distance
+
+Interpretation:
+
+Higher value = the block finished closer to the goal than where it started.
+
+This is very important because an episode may reach a good position briefly but then lose it.
+
+5. best_progress_ratio
+
+How much progress was achieved at the best moment.
+
+best_progress_ratio =
 (start_goal_distance - best_goal_distance) / start_goal_distance
 
-So it measures best achieved progress, not final progress. For PushBlock, I think you should also derive:
+Interpretation:
 
-final_progress_ratio = (start_goal_distance - final_goal_distance) / start_goal_distance
+Higher value = the episode at least achieved strong progress at some point.
 
-and
+This is similar to your earlier normalized_task_progress, which appears to measure best achieved progress rather than final retained progress.
 
-neg_goal_regression = -(final_goal_distance - best_goal_distance)
+Construct 2: Progress Retention / Stability
 
-These two are important because PushBlock performance is not only “did the block ever get close?” but also “did it end close and avoid losing progress?”
+This construct means:
 
-My recommended options to give the other AI
-Option 1 — Best main candidate: PushBlock final performance retention
+After the block reached its best position, did the episode keep that progress?
 
-Use:
+This is useful because good training episodes should not only touch a good state briefly; they should preserve useful progress.
 
-neg_final_goal_distance
+6. goal_regression
+
+How much progress was lost after the best moment.
+
+goal_regression =
+final_goal_distance - best_goal_distance
+
+Lower is better. For CFA:
+
+neg_goal_regression = -goal_regression
+
+Interpretation:
+
+Higher value = the block did not drift far away after its best position.
+
+This was also one of the variables previously suggested for the PushBlock performance bundle.
+
+7. near_goal_fraction
+
+Proportion of episode frames where the block was near the goal.
+
+near_goal_fraction =
+number_of_rows_where(block_goal_distance <= near_goal_threshold) /
+total_number_of_rows
+
+Suggested threshold:
+
+near_goal_threshold = 1.0
+
+But if Unity has an official success threshold, use that instead.
+
+Interpretation:
+
+Higher value = the block spent more time near the goal.
+
+Caution: this may only work well for stronger episodes. In weak episodes, the block may never get near the goal, so this variable can become mostly zero.
+
+8. stay_near_after_best
+
+Whether the block stayed near the goal after reaching its best position.
+
+First identify:
+
+best_step =
+step_index where block_goal_distance is minimum
+
+Then calculate:
+
+stay_near_after_best =
+number_of_rows_after_best_where(block_goal_distance <= near_goal_threshold) /
+number_of_rows_after_best
+
+Interpretation:
+
+Higher value = the episode maintained near-goal behaviour after reaching the best state.
+
+This is a good secondary stability metric, but I would not make it the main indicator unless it behaves well in both top and bottom episode groups.
+
+9. final_20pct_mean_distance
+
+Mean block-goal distance during the final 20% of the episode.
+
+final_20pct_mean_distance =
+mean(block_goal_distance during final 20% of rows)
+
+For CFA:
+
+neg_final_20pct_mean_distance =
+-final_20pct_mean_distance
+
+Interpretation:
+
+Higher value = the block stayed closer to the goal near the end.
+
+This may be more stable than using only the final frame.
+
+Construct 3: Execution Efficiency
+
+This construct means:
+
+Did the episode achieve progress efficiently?
+
+This is useful if you want to select better training data, not merely episodes where the block eventually reached the goal.
+
+10. episode_steps
+
+Total number of steps in the episode.
+
+episode_steps = max(step_index) - min(step_index) + 1
+
+For CFA:
+
+neg_episode_steps = -episode_steps
+
+Interpretation:
+
+Higher value = fewer steps used.
+
+If all episodes have the same maximum length, this may not be useful.
+
+11. episode_time
+
+Elapsed real time for the episode.
+
+episode_time =
+last(realtime_since_start) - first(realtime_since_start)
+
+For CFA:
+
+neg_episode_time = -episode_time
+
+Interpretation:
+
+Higher value = faster episode.
+
+Use either episode_steps or episode_time, not necessarily both, because they may measure nearly the same thing.
+
+12. progress_rate
+
+Progress per step.
+
+progress_rate =
+final_progress_ratio / episode_steps
+
+Because this can be very small, use:
+
+log_progress_rate =
+log(final_progress_ratio + 1e-6) - log(episode_steps)
+
+Or simpler:
+
+log_progress_rate =
+log((final_progress_ratio + 1e-6) / episode_steps)
+
+Interpretation:
+
+Higher value = more progress per step.
+
+For CFA, this is useful because it adds an efficiency dimension beyond distance alone.
+
+13. block_path_length
+
+Total distance travelled by the block.
+
+For each episode:
+
+block_path_length =
+sum(
+sqrt(
+(block_pos_x_t - block_pos_x_t-1)^2 +
+(block_pos_z_t - block_pos_z_t-1)^2
+)
+)
+
+Interpretation:
+
+How much the block moved overall.
+
+This alone is not “better” or “worse.” It becomes useful when combined with directness.
+
+14. block_movement_directness
+
+How directly the block movement reduced the goal distance.
+
+block_movement_directness =
+(start_goal_distance - final_goal_distance) / block_path_length
+
+Add protection:
+
+if block_path_length == 0, set as 0 or NA
+
+Interpretation:
+
+Higher value = the block’s movement was useful rather than wasted.
+
+This is a good efficiency indicator.
+
+Construct 4: Agent–Block Interaction Quality
+
+This is optional, but potentially useful for training data selection.
+
+It means:
+
+Did the agent actually engage with the block in a useful way?
+
+15. agent_block_distance
+
+For each row:
+
+agent_block_distance =
+sqrt(
+(agent_pos_x - block_pos_x)^2 +
+(agent_pos_z - block_pos_z)^2
+) 16. engagement_fraction
+
+Proportion of rows where the agent was close to the block.
+
+engaged =
+agent_block_distance <= contact_threshold
+
+Suggested starting threshold:
+
+contact_threshold = 1.0 or 1.25
+
+Then:
+
+engagement_fraction =
+number_of_engaged_rows / total_rows
+
+Interpretation:
+
+Higher value = the agent spent more time close enough to push/control the block.
+
+17. active_push_fraction
+
+Proportion of rows where the agent was close to the block and the block was moving.
+
+active_push =
+(agent_block_distance <= contact_threshold) AND
+(block_speed > speed_threshold)
+
+Suggested:
+
+speed_threshold = 0.01
+
+Then:
+
+active_push_fraction =
+number_of_active_push_rows / total_rows
+
+Interpretation:
+
+Higher value = the agent was likely producing useful block movement.
+
+Construct 5: Reward / Termination Efficiency
+
+This should be secondary, not the main CFA construct, because reward is partly built into the environment rules. But it is still useful for checking whether the performance construct agrees with the training signal.
+
+18. reward_sum
+    reward_sum = sum(reward)
+
+Interpretation:
+
+Higher value = better total reward.
+
+19. reward_rate
+    reward_rate = reward_sum / episode_steps
+
+Interpretation:
+
+Higher value = more reward per step.
+
+20. max_reward
+    max_reward = max(reward)
+
+This can detect success events if success gives a large reward. But do not rely on it if it becomes ceilinged in the top group.
+
+21. success_proxy
+
+Only use this if your environment gives a clear success reward.
+
+Example:
+
+success_proxy =
+1 if max_reward >= success_reward_threshold
+0 otherwise
+
+For example, if success reward is 1.0:
+
+success_proxy = max_reward >= 1.0
+
+But I would not put success_proxy inside the main CFA if many top episodes are already all successful.
+
+My recommended CFA variable set
+
+For your main CFA, I would start with this:
+
+PushBlock Performance Quality
+
+Task Achievement:
+
+- neg_final_goal_distance
+- neg_best_goal_distance
+- final_progress_ratio
+
+Progress Retention:
+
+- neg_goal_regression
+- neg_final_20pct_mean_distance
+- near_goal_fraction
+
+Execution Efficiency:
+
+- neg_episode_steps
+- log_progress_rate
+- block_movement_directness
+
+Then test this model:
+
+TaskAchievement =~
+neg_final_goal_distance +
+neg_best_goal_distance +
 final_progress_ratio
-neg_goal_regression
 
-This was very strong in your data:
+ProgressRetention =~
+neg_goal_regression +
+neg_final_20pct_mean_distance +
+near_goal_fraction
 
-Bundle	Overall alpha	Top alpha	Bottom alpha
-Final performance retention	0.945	0.892	0.965
+ExecutionEfficiency =~
+neg_episode_steps +
+log_progress_rate +
+block_movement_directness
 
-This is my favorite because it directly captures:
+PushBlockPerformance =~
+TaskAchievement +
+ProgressRetention +
+ExecutionEfficiency
+Simpler version if the CFA becomes unstable
 
-Did the block finish close to the goal, make final progress from its starting point, and avoid drifting away from its best achieved state?
+Use one general factor:
 
-This is probably the cleanest PushBlock performance-quality bundle.
-
-One caution: it is a tight bundle because the variables are mathematically related. That is not necessarily bad, but you should present it as an episode performance index, not as a deep psychological latent factor.
-
-Option 2 — Broader PushBlock performance bundle
-
-Use:
-
-neg_final_goal_distance
-neg_best_goal_distance
-final_progress_ratio
-neg_goal_regression
-
-Result:
-
-Bundle	Overall alpha	Top alpha	Bottom alpha
-Broad block-to-goal performance	0.906	0.866	0.879
-
-This is more balanced than Option 1 because it includes both:
-
-best achieved closeness, and
-final retained performance.
-
-This may be easier to defend conceptually:
-
-The bundle captures both peak task achievement and final task outcome.
-
-I would try this as the main CFA candidate.
-
-Option 3 — Distance + movement efficiency bundle
-
-Use:
-
-neg_final_goal_distance
-neg_best_goal_distance
-final_progress_ratio
+PushBlockPerformance =~
+neg_final_goal_distance +
+neg_best_goal_distance +
+final_progress_ratio +
+neg_goal_regression +
 log_progress_rate
 
-Result:
+This is probably the safest first model.
 
-Bundle	Overall alpha	Top alpha	Bottom alpha
-Distance + movement efficiency	0.920	0.891	0.867
+Variables I would avoid as main CFA indicators
 
-This is also very promising. It adds process information through log_progress_rate, so it is less purely distance-based.
+I would avoid these in the main model:
 
-This bundle answers:
+raw agent_pos_x / agent_pos_z
+raw block_pos_x / block_pos_z
+raw action_x / action_y
+raw reward at each row
+success_proxy alone
+max_reward alone
 
-Did the agent push the block close to the goal, finish with meaningful progress, and achieve progress efficiently?
+They are either too raw, too dependent on the environment design, or not episode-level enough.
 
-This might be the best option if you want the construct to include both outcome quality and process efficiency.
+The cleanest claim is:
 
-Option 4 — Process/progress bundle, not final outcome
-
-Use:
-
-normalized_task_progress
-final_progress_ratio
-log_progress_rate
-
-Result:
-
-Bundle	Overall alpha	Top alpha	Bottom alpha
-Progress-rate process	0.904	0.879	0.884
-
-This is good if you want a bundle that focuses on movement progress, not final block placement alone.
-
-I would name it:
-
-PushBlock progress efficiency
-
-or
-
-Task progress process score
-
-This one is useful as a secondary construct, especially if you want to separate “how much progress was made” from “where the block finally ended.”
-
-Option 5 — Reward/termination efficiency bundle
-
-Use:
-
-reward_sum
-log_reward_gap
-neg_episode_steps
-
-Result:
-
-Bundle	Overall alpha	Top alpha	Bottom alpha
-Reward/termination efficiency	0.974	0.944	0.989
-
-This looks extremely strong statistically, but I would not use it as the main performance construct.
-
-Why? Because it mostly reflects the reward/termination system. In the top episodes, reward and episode steps are almost mechanically linked. It may be useful, but I would treat it as:
-
-training efficiency / reward-based episode completion
-
-not as the main PushBlock performance construct.
-
-What I would tell the other AI to try
-
-Give them this:
-
-Please test these PushBlock episode-level candidate bundles. Avoid success_proxy, max_reward, and reward_score inside CFA/latent bundles because they are ceilinged or nearly constant in the top split. Also avoid using both distance_score and neg_best_goal_distance together because they are basically the same information. Please derive final_progress_ratio = (start_goal_distance - final_goal_distance) / start_goal_distance and neg_goal_regression = -(final_goal_distance - best_goal_distance).
-
-Candidate A: neg_final_goal_distance, final_progress_ratio, neg_goal_regression
-
-Candidate B: neg_final_goal_distance, neg_best_goal_distance, final_progress_ratio, neg_goal_regression
-
-Candidate C: neg_final_goal_distance, neg_best_goal_distance, final_progress_ratio, log_progress_rate
-
-Candidate D: normalized_task_progress, final_progress_ratio, log_progress_rate
-
-Candidate E, secondary only: reward_sum, log_reward_gap, neg_episode_steps
-
-Please rank them by overall alpha, top alpha, bottom alpha, CFA fit, and whether the model remains estimable in both top and bottom splits. Prefer bundles that remain estimable in both splits over bundles that only fit the top episodes.
-
-My own ranking would be:
-
-Option B as the best main CFA/performance bundle.
-Option C if you want outcome + efficiency.
-Option A if you want a compact performance index.
-Option D as a process/progress construct.
-Option E only as a reward/termination efficiency check, not the main PushBlock performance measure.
+PushBlock performance quality was calculated from episode-level indicators of task achievement, progress retention, and execution efficiency. Higher scores indicate episodes where the block ended closer to the goal, achieved meaningful progress, retained that progress, and did so efficiently.
